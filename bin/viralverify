@@ -39,7 +39,48 @@ def parse_args(args):
     return parser.parse_args()
 
 
+import argparse
+import collections
+import pyhmmer
+from pyhmmer.easel import SequenceFile
+from pyhmmer.plan7 import HMMFile
 
+def run_pyhmmer(faa_file, hmm_db_file, threads, evalue, bitscore):
+    """
+    Runs PyHMMER on given faa file
+    :param faa_file: input .faa file path
+    :param hmm_db_file: HMM database file path
+    :param threads: number of threads
+    :param evalue: evalue threshold for pyhmmer
+    :return: feature_table
+    """
+    # Define result named tuple
+    Result = collections.namedtuple("Result", ["protein", "phrog", "bitscore", "evalue"])
+
+    # Run hmmscan and get all results
+    results = []
+    with pyhmmer.plan7.HMMFile(hmm_db_file) as hmms:  # Load HMMs
+        with pyhmmer.easel.SequenceFile(faa_file, digital=True) as seqs:  # Load sequences
+            for hits in pyhmmer.hmmer.hmmscan(seqs, hmms, cpus=int(threads), E=float(evalue), T=bitscore):  # Run hmmscan
+                protein = hits.query_name.decode()  # Get protein from the hit
+                for hit in hits:
+                    if hit.included:
+                        # Include the hit to the result collection
+                        results.append(Result(protein, hit.name.decode(), hit.score, hit.evalue))
+    
+    # Group results by protein prefix
+    grouped_results = collections.defaultdict(list)
+    for result in results:
+        protein_prefix = result.protein.split('_')[0] + "_" + result.protein.split('_')[1]
+        grouped_results[protein_prefix].append(result.phrog)
+    
+    # Create feature table
+    feature_table = []
+    for protein, phrogs in grouped_results.items():
+        phrog_str = ' '.join(phrogs)
+        feature_table.append((protein, phrog_str))  # Use tuple instead of string concatenation
+    
+    return feature_table
     
 
 
@@ -219,30 +260,33 @@ def main():
           protein_output.write(i[1]+"\n")
 
    # HMM search
+    logging.basicConfig(level=logging.INFO)
 
-    logging.info(f"HMM domains prediction...")
-    res = os.system ("hmmsearch  --noali --cut_nc  -o "+name+"_out_pfam --domtblout "+name+"_domtblout --cpu "+ threads + " " + hmm + " "+name+"_proteins_circ.fa")
-    if res != 0:
-        print ("hmmsearch run failed")
-        exit(1)  
+    try:
+        logging.info("HMM domains prediction...")
+        faa_file = name + "_proteins_circ.fa"
+        threads = 0
+        evalue = 1e-10
+        bitscore = 30
 
-    logging.info(f"Parsing...")
-    tblout_pfam= name + "_domtblout" 
+        feature_table = run_pyhmmer(faa_file, hmm, threads, evalue, bitscore)
+        
+        feature_table_names = []
+        feature_table_genes = []
+        for i in feature_table:
+            feature_table_names.append(i[0].strip())
+            feature_table_genes.append(i[1].strip())
 
-
-    feature_table = get_table_from_tblout(tblout_pfam) 
-    feature_table = [i.strip().split(' ', 1) for i in feature_table]
+        # 将 feature_table 写入文本文件
+        output_file = name + "_feature_table.txt"
+        with open(output_file, 'w') as f:
+            for row in feature_table:
+                f.write("\t".join(map(str, row)).strip() + "\n")  # 确保每行没有多余的空格
     
-    with open(name + '_feature_table.txt', 'w') as output:
-        writer = csv.writer(output, lineterminator='\n')
-        writer.writerows(feature_table)
-    
-    
-    feature_table_names=[]
-    feature_table_genes=[]
-    for i in feature_table:
-          feature_table_names.append(i[0])
-          feature_table_genes.append(i[1])
+        logging.info(f"Feature table written to {output_file}")            
+    except Exception as e:
+        logging.error("Error occurred during HMM domains prediction: %s", str(e))
+        raise  # 重新引发异常，以便在需要时进一步处理
     
     logging.info(f"Classification...")
 
@@ -337,4 +381,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
